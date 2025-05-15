@@ -14,8 +14,7 @@ logging.basicConfig(level=logging.INFO)
 EXIT_STICKER_FILE_ID = "CAACAgIAAxkBAAEOec5oJEnpPl_g4bf0eBnsOCVf8AzwEwACGwADXQWCFnr-E0IuatztNgQ"
 MENU_HELP = "Помощь"
 MENU_EXIT = "Выход"
-git add .
-git commit -m "Первый коммит"
+
 def get_weather(city):
     url = f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={API_KEY}&units=metric"
 
