@@ -6,6 +6,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import speech_recognition as sr
 import pyttsx3
 import random
+import matplotlib.pyplot as plt
 
 logging.basicConfig(level=logging.INFO)
 
@@ -26,21 +27,11 @@ CITIES = {
 def get_weather(city):
     city = city.lower().strip()
 
-    cities = {
-        "москва": (55.75, 37.61),
-        "санкт-петербург": (59.93, 30.31),
-        "братск": (56.15, 101.63),
-        "киев": (50.45, 30.52),
-        "минск": (53.90, 27.56),
-        "новосибирск": (55.03, 82.92)
-    }
-
-    if city not in cities:
+    if city not in CITIES:
         return {"error": "Город не найден"}
 
-    latitude, longitude = cities[city]
-
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={latitude}&longitude={longitude}&current=temperature_2m,wind_speed_10m"
+    latitude, longitude = CITIES[city]
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={latitude}&longitude={longitude}&current=temperature_2m,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,precipitation_sum"
 
     try:
         response = requests.get(url)
@@ -55,22 +46,38 @@ def format_weather(data):
     if "error" in data:
         return data["error"]
 
-    if "current" in data:
-        temp = data["current"]["temperature_2m"]
-        wind_speed = data["current"]["wind_speed_10m"]
+    current_weather = ""  # Чтобы избежать ошибки, если current нет
+    reaction = ""
 
-        if temp >= 25:
+    # Проверяем текущую погоду
+    if "current" in data:
+        temp_now = data["current"]["temperature_2m"]
+        wind_now = data["current"]["wind_speed_10m"]
+        current_weather = f"🌍 **Текущая погода:**\n🌡 Температура: {temp_now}°C\n💨 Ветер: {wind_now} м/с\n\n"
+
+        # Определяем реакцию на погоду
+        if temp_now >= 25:
             reaction = random.choice(WEATHER_REPLIES["hot"])
-        elif temp <= 5:
+        elif temp_now <= 5:
             reaction = random.choice(WEATHER_REPLIES["cold"])
-        elif wind_speed > 10:
+        elif wind_now > 10:
             reaction = random.choice(WEATHER_REPLIES["windy"])
         else:
             reaction = random.choice(WEATHER_REPLIES["normal"])
 
-        return f"🌍 Погода:\n🌡 Температура: {temp}°C\n💨 Ветер: {wind_speed} м/с\n\n{reaction}"
+    # Прогноз на 7 дней
+    forecast_text = ""
+    if "daily" in data:
+        temp_max = data["daily"]["temperature_2m_max"][:7]
+        temp_min = data["daily"]["temperature_2m_min"][:7]
+        rain = data["daily"]["precipitation_sum"][:7]
+        dates = data["daily"]["time"][:7]
 
-    return "Не удалось получить данные о погоде, попробуй позже."
+        forecast_text = "📅 **Прогноз на неделю:**\n"
+        for i in range(7):
+            forecast_text += f"{dates[i]}: 🌡 {temp_min[i]}°C - {temp_max[i]}°C, ☔ Осадки: {rain[i]} мм\n"
+
+    return f"{current_weather}{reaction}\n\n{forecast_text}"
 
 
 WEATHER_REPLIES = {
@@ -101,7 +108,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
     if text.lower() == MENU_HELP.lower():
-        await update.message.reply_text("Посмотри какая погода сегодня заебатая.")
+        await update.message.reply_text("Напиши город, либо скажи его в голосовое сообщение, чтобы узнать погоду.")
     elif text == MENU_EXIT:
         await update.message.reply_text("Ну и пошел нахуй!", reply_markup=ReplyKeyboardRemove())
         await update.message.reply_sticker(sticker=EXIT_STICKER_FILE_ID)
@@ -115,8 +122,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_path = "voice.ogg"
     await file.download_to_drive(file_path)
 
+    # Конвертируем ogg в wav
     os.system(f"ffmpeg -y -i {file_path} -ar 16000 -ac 1 voice.wav")
 
+    # Распознаём речь
     recognizer = sr.Recognizer()
     with sr.AudioFile("voice.wav") as source:
         audio = recognizer.record(source)
@@ -126,10 +135,11 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         weather_data = get_weather(text)
         await update.message.reply_text(format_weather(weather_data))
     except sr.UnknownValueError:
-        await update.message.reply_text("Не удалось распознать речь.")
+        await update.message.reply_text("Не удалось распознать речь. Попробуй ещё раз.")
     except sr.RequestError:
-        await update.message.reply_text("Ошибка сервиса распознавания.")
+        await update.message.reply_text("Ошибка сервиса распознавания. Попробуй позже.")
 
+    # Удаляем временные файлы
     os.remove("voice.ogg")
     os.remove("voice.wav")
 
