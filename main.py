@@ -1,13 +1,10 @@
 import os
 import logging
 import requests
-from dotenv import load_dotenv
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-
-load_dotenv()
-TELEGRAM_TOKEN = os.getenv('Telegram_bot_token')
-API_KEY = os.getenv("API_KEY")
+import speech_recognition as sr
+import pyttsx3
 
 logging.basicConfig(level=logging.INFO)
 
@@ -15,8 +12,34 @@ EXIT_STICKER_FILE_ID = "CAACAgIAAxkBAAEOec5oJEnpPl_g4bf0eBnsOCVf8AzwEwACGwADXQWC
 MENU_HELP = "Помощь"
 MENU_EXIT = "Выход"
 
+CITIES = {
+    "москва": (55.75, 37.61),
+    "санкт-Петербург": (59.93, 30.31),
+    "братск": (56.15, 101.63),
+    "киев": (50.45, 30.52),
+    "минск": (53.90, 27.56),
+    "новосибирск": (55.03, 82.92)
+}
+
+
 def get_weather(city):
-    url = f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={API_KEY}&units=metric"
+    city = city.lower().strip()
+
+    cities = {
+        "москва": (55.75, 37.61),
+        "санкт-петербург": (59.93, 30.31),
+        "братск": (56.15, 101.63),
+        "киев": (50.45, 30.52),
+        "минск": (53.90, 27.56),
+        "новосибирск": (55.03, 82.92)
+    }
+
+    if city not in cities:
+        return {"error": "Город не найден"}
+
+    latitude, longitude = cities[city]
+
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={latitude}&longitude={longitude}&current=temperature_2m,wind_speed_10m"
 
     try:
         response = requests.get(url)
@@ -24,19 +47,56 @@ def get_weather(city):
         return response.json()
     except requests.exceptions.RequestException as err:
         logging.error(f"Ошибка запроса: {err}")
-        return None
+        return {"error": "Ошибка запроса"}
 
 
 def format_weather(data):
-    if data:
-        city = data.get("name", "Неизвестно")
-        temp = data["main"]["temp"]
-        weather = data["weather"][0]["description"]
-        humidity = data["main"]["humidity"]
-        wind_speed = data["wind"]["speed"]
+    if "error" in data:
+        return data["error"]
 
-        return f"🌍 Город: {city}\n☁️ Погода: {weather}\n🌡 Температура: {temp}°C\n💧 Влажность: {humidity}%\n💨 Ветер: {wind_speed} м/с"
-    return "Не удалось получить данные. Проверь API-ключ или название города."
+    if "current" in data:
+        temp = data["current"]["temperature_2m"]
+        wind_speed = data["current"]["wind_speed_10m"]
+
+        return f"🌍 Погода:\n🌡 Температура: {temp}°C\n💨 Ветер: {wind_speed} м/с"
+    return "Не удалось получить данные о погоде, попробуй позже."
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+
+    if text.lower() == MENU_HELP.lower():
+        await update.message.reply_text("Посмотри какая погода сегодня заебатая.")
+    elif text == MENU_EXIT:
+        await update.message.reply_text("Ну и пошел нахуй!", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_sticker(sticker=EXIT_STICKER_FILE_ID)
+    else:
+        weather_data = get_weather(text)
+        await update.message.reply_text(format_weather(weather_data))
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    file = await update.message.voice.get_file()
+    file_path = "voice.ogg"
+    await file.download_to_drive(file_path)
+
+    os.system(f"ffmpeg -y -i {file_path} -ar 16000 -ac 1 voice.wav")
+
+    recognizer = sr.Recognizer()
+    with sr.AudioFile("voice.wav") as source:
+        audio = recognizer.record(source)
+
+    try:
+        text = recognizer.recognize_google(audio, language="ru-RU")
+        weather_data = get_weather(text)
+        await update.message.reply_text(format_weather(weather_data))
+    except sr.UnknownValueError:
+        await update.message.reply_text("Не удалось распознать речь.")
+    except sr.RequestError:
+        await update.message.reply_text("Ошибка сервиса распознавания.")
+
+    os.remove("voice.ogg")
+    os.remove("voice.wav")
 
 
 def build_menu_keyboard():
@@ -44,29 +104,17 @@ def build_menu_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-
-    if text.strip().lower() == MENU_HELP.lower():
-        await update.message.reply_text("Тебе уже ничем не помочь блять, посмотри лучше какая погода сегодня заебатая.")
-    elif text == MENU_EXIT:
-        await update.message.reply_text("Ну и пошел нахуй от сюда!", reply_markup=ReplyKeyboardRemove())
-        await update.message.reply_sticker(sticker=EXIT_STICKER_FILE_ID)
-    else:
-        weather_data = get_weather(text)
-        await update.message.reply_text(format_weather(weather_data))
-
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Дарова, посмотри погоду (напиши название города) либо потыкай кнопки.",
+    await update.message.reply_text("Дарова! Напиши название города или потыкай кнопки.",
                                     reply_markup=build_menu_keyboard())
 
 
 def main():
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    application = Application.builder().token(os.getenv('Telegram_bot_token')).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT, handle_message))
+    application.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
     logging.info("Бот запущен")
     application.run_polling()
